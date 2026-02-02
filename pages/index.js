@@ -39,7 +39,6 @@ export default function BalanceGame() {
   const [isVoting, setIsVoting] = useState(false)
   const [totalVoters, setTotalVoters] = useState(0)
   
-  const channelRef = useRef(null)
   const currentQ = questions[currentIdx]
 
   // 로컬 스토리지에서 투표 기록 로드
@@ -55,91 +54,53 @@ export default function BalanceGame() {
     localStorage.setItem('balance_votes', JSON.stringify(votes))
   }, [loadUserVotes])
 
-  // 데이터 로드 및 실시간 구독
+  // 데이터 로드 함수
+  const loadData = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from('balance_game')
+        .select('*')
+        .eq('id', currentQ.id)
+        .single()
+
+      if (error) {
+        console.error('Error loading data:', error)
+        setCounts({ a: 0, b: 0 })
+      } else if (data) {
+        setCounts({ 
+          a: data.option_a_count || 0, 
+          b: data.option_b_count || 0 
+        })
+        setTotalVoters((data.option_a_count || 0) + (data.option_b_count || 0))
+      }
+
+      // 사용자의 이전 투표 확인
+      const userVotes = loadUserVotes()
+      setVoted(userVotes[currentQ.id] || null)
+
+    } catch (error) {
+      console.error('Error in loadData:', error)
+    } finally {
+      setLoading(false)
+    }
+  }, [currentQ.id, loadUserVotes])
+
+  // 초기 로드
   useEffect(() => {
-    let mounted = true
-
-    const loadData = async () => {
-      try {
-        setLoading(true)
-        
-        // 현재 질문의 투표 데이터 로드
-        const { data, error } = await supabase
-          .from('balance_game')
-          .select('*')
-          .eq('id', currentQ.id)
-          .single()
-
-        if (error) {
-          console.error('Error loading data:', error)
-          setCounts({ a: 0, b: 0 })
-        } else if (mounted && data) {
-          setCounts({ 
-            a: data.option_a_count || 0, 
-            b: data.option_b_count || 0 
-          })
-          setTotalVoters((data.option_a_count || 0) + (data.option_b_count || 0))
-        }
-
-        // 사용자의 이전 투표 확인
-        const userVotes = loadUserVotes()
-        if (mounted) {
-          setVoted(userVotes[currentQ.id] || null)
-        }
-
-      } catch (error) {
-        console.error('Error in loadData:', error)
-      } finally {
-        if (mounted) {
-          setLoading(false)
-        }
-      }
-    }
-
+    setLoading(true)
     loadData()
+  }, [currentIdx, loadData])
 
-    // 실시간 구독 설정 (쓰로틀링 적용)
-    const channel = supabase
-      .channel(`balance_${currentQ.id}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'balance_game',
-          filter: `id=eq.${currentQ.id}`
-        },
-        (payload) => {
-          if (mounted && payload.new) {
-            // 부드러운 업데이트를 위한 딜레이
-            setTimeout(() => {
-              if (mounted) {
-                setCounts({
-                  a: payload.new.option_a_count || 0,
-                  b: payload.new.option_b_count || 0
-                })
-                setTotalVoters(
-                  (payload.new.option_a_count || 0) + 
-                  (payload.new.option_b_count || 0)
-                )
-              }
-            }, 100)
-          }
-        }
-      )
-      .subscribe()
+  // 주기적 업데이트 (2초마다) - 실시간 효과
+  useEffect(() => {
+    const interval = setInterval(() => {
+      loadData()
+    }, 2000) // 2초마다 새로고침
 
-    channelRef.current = channel
+    return () => clearInterval(interval)
+  }, [loadData])
 
-    return () => {
-      mounted = false
-      if (channelRef.current) {
-        supabase.removeChannel(channelRef.current)
-      }
-    }
-  }, [currentIdx, currentQ.id, loadUserVotes])
-
-  // 투표 처리 (낙관적 업데이트 + 재시도 로직)
+  // 투표 처리
   const handleVote = async (choice) => {
     if (voted || isVoting) return
 
@@ -165,6 +126,9 @@ export default function BalanceGame() {
 
       // 로컬 저장
       saveUserVote(currentQ.id, choice)
+
+      // 즉시 데이터 다시 로드
+      setTimeout(loadData, 500)
 
     } catch (error) {
       console.error('투표 오류:', error)
@@ -331,7 +295,7 @@ export default function BalanceGame() {
 
       {/* 하단 안내 */}
       <div className="mt-8 text-center text-xs md:text-sm text-gray-500">
-        실시간으로 다른 사용자들의 선택을 확인할 수 있습니다
+        2초마다 자동으로 업데이트됩니다
       </div>
     </div>
   )
